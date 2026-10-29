@@ -1,0 +1,131 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <math.h>
+
+#define NUM_PARTICLES 100
+#define REST_DENSITY 1000.0f
+#define GAS_CONSTANT 2000.0f
+#define VISCOSITY 250.0f
+#define H 16.0f              // Smoothing radius
+#define HSQ (H * H)
+#define MASS 65.0f
+#define DT 0.0008f
+#define POLY6 315.0f / (64.0f * M_PI * 32768.0f) // 1/h^9 factor scaled
+#define SPIKY_GRAD -45.0f / (M_PI * 16.0f)        // 1/h^6 factor scaled
+#define VISC_LAP 45.0f / (M_PI * 16.0f)           // 1/h^6 factor scaled
+
+typedef struct {
+    float x, y;
+    float vx, vy;
+    float fx, fy;
+    float rho;
+    float p;
+} Particle;
+
+Particle particles[NUM_PARTICLES];
+
+void init_particles() {
+    int count = 0;
+    for (float y = 10.0f; y < 110.0f; y += 10.0f) {
+        for (float x = 10.0f; x < 110.0f; x += 10.0f) {
+            if (count < NUM_PARTICLES) {
+                particles[count].x = x;
+                particles[count].y = y;
+                particles[count].vx = 0.0f;
+                particles[count].vy = 0.0f;
+                particles[count].fx = 0.0f;
+                particles[count].fy = 0.0f;
+                particles[count].rho = REST_DENSITY;
+                particles[count].p = 0.0f;
+                count++;
+            }
+        }
+    }
+}
+
+void compute_density_pressure() {
+    for (int i = 0; i < NUM_PARTICLES; i++) {
+        particles[i].rho = 0.0f;
+        for (int j = 0; j < NUM_PARTICLES; j++) {
+            float dx = particles[j].x - particles[i].x;
+            float dy = particles[j].y - particles[i].y;
+            float r2 = dx * dx + dy * dy;
+
+            if (r2 < HSQ) {
+                // Poly6 Kernel for Density
+                float diff = HSQ - r2;
+                particles[i].rho += MASS * POLY6 * diff * diff * diff;
+            }
+        }
+        // Ideal gas state equation: P = k * (rho - rho_0)
+        particles[i].p = GAS_CONSTANT * (particles[i].rho - REST_DENSITY);
+        if (particles[i].p < 0.0f) particles[i].p = 0.0f; // Pressure non-negativity constraint
+    }
+}
+
+void compute_forces() {
+    for (int i = 0; i < NUM_PARTICLES; i++) {
+        float fpress_x = 0.0f, fpress_y = 0.0f;
+        float fvisc_x = 0.0f, fvisc_y = 0.0f;
+
+        for (int j = 0; j < NUM_PARTICLES; j++) {
+            if (i == j) continue;
+
+            float dx = particles[j].x - particles[i].x;
+            float dy = particles[j].y - particles[i].y;
+            float r = sqrtf(dx * dx + dy * dy);
+
+            if (r < H && r > 0.0001f) {
+                // Spiky Kernel Gradient for Pressure
+                float dir_x = dx / r;
+                float dir_y = dy / r;
+                float term_p = -MASS * (particles[i].p + particles[j].p) / (2.0f * particles[j].rho) 
+                               * SPIKY_GRAD * powf(H - r, 2.0f);
+                fpress_x += term_p * dir_x;
+                fpress_y += term_p * dir_y;
+
+                // Viscosity Kernel Laplacian for Shear Forces
+                float term_v = VISCOSITY * MASS * (particles[j].vx - particles[i].vx) / particles[j].rho 
+                               * VISC_LAP * (H - r);
+                fvisc_x += term_v;
+                fvisc_y += term_v;
+            }
+        }
+
+        // Gravity force (F = m * g)
+        float fgrav_y = particles[i].rho * 9.81f;
+
+        particles[i].fx = fpress_x + fvisc_x;
+        particles[i].fy = fpress_y + fvisc_y + fgrav_y;
+    }
+}
+
+void integrate() {
+    for (int i = 0; i < NUM_PARTICLES; i++) {
+        // Semi-implicit Euler integration
+        particles[i].vx += DT * (particles[i].fx / particles[i].rho);
+        particles[i].vy += DT * (particles[i].fy / particles[i].rho);
+
+        particles[i].x += DT * particles[i].vx;
+        particles[i].y += DT * particles[i].vy;
+
+        // Simple boundary constraints (Box container)
+        if (particles[i].x < 0.0f) { particles[i].vx *= -0.5f; particles[i].x = 0.0f; }
+        if (particles[i].x > 200.0f) { particles[i].vx *= -0.5f; particles[i].x = 200.0f; }
+        if (particles[i].y < 0.0f) { particles[i].vy *= -0.5f; particles[i].y = 0.0f; }
+        if (particles[i].y > 200.0f) { particles[i].vy *= -0.5f; particles[i].y = 200.0f; }
+    }
+}
+
+int main() {
+    init_particles();
+    printf("Simulating 2D SPH Fluid System...\n");
+    for (int step = 0; step < 5; step++) {
+        compute_density_pressure();
+        compute_forces();
+        integrate();
+        printf("Step %d: Particle 0 -> Pos:(%.2f, %.2f) Density:%.2f Pressure:%.2f\n",
+               step + 1, particles[0].x, particles[0].y, particles[0].rho, particles[0].p);
+    }
+    return 0;
+}
